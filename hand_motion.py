@@ -15,6 +15,18 @@ detector = vision.HandLandmarker.create_from_options(options)
 
 cap = cv2.VideoCapture(0)
 
+import math
+
+# Steering State
+steering_angle = 0.0
+calibration_offset = 0.0
+is_calibrated = False
+
+# Smoothing (Exponential Moving Average)
+# 0.1 = very smooth but laggy | 0.9 = jerky but instant
+smoothing_factor = 0.2 
+smoothed_angle = 0.0
+
 while cap.isOpened():
     success, image = cap.read()
     if not success:
@@ -65,6 +77,41 @@ while cap.isOpened():
                 x = int(landmark.x * image.shape[1])
                 y = int(landmark.y * image.shape[0])
                 cv2.circle(image, (x, y), 5, (0, 255, 0), -1)
+    
+    if detection_result.hand_landmarks and len(detection_result.hand_landmarks) == 2:
+        # 1. Identify hands (using X-position is more stable than AI labels)
+        hand1 = detection_result.hand_landmarks[0][0] # Wrist of first hand
+        hand2 = detection_result.hand_landmarks[1][0] # Wrist of second hand
+        
+        # Sort so we always know which is Left and which is Right
+        if hand1.x < hand2.x:
+            left_h, right_h = hand1, hand2
+        else:
+            left_h, right_h = hand2, hand1
+
+        # 2. Calculate the "Hand Vector" Angle
+        # We use (y_left - y_right) because Y increases downwards in CV
+        dy = left_h.y - right_h.y
+        dx = right_h.x - left_h.x
+        raw_angle = math.degrees(math.atan2(dy, dx))
+
+        # 3. Calibration (Press 'C' to set current position as "Straight")
+        if cv2.waitKey(1) & 0xFF == ord('c'):
+            calibration_offset = raw_angle
+            is_calibrated = True
+            print(f"Calibrated! Offset: {calibration_offset}")
+
+        # 4. Apply Offset and Smooth
+        current_angle = raw_angle - calibration_offset
+        
+        # EMA Formula: Smoothed = (New * factor) + (Old * (1 - factor))
+        smoothed_angle = (current_angle * smoothing_factor) + (smoothed_angle * (1 - smoothing_factor))
+
+        print(f"Raw Angle: {raw_angle}, Smoothed Angle: {smoothed_angle}")
+
+        # # 5. Output to "Car"
+        # # Map this to your controls (e.g., -90 to 90 degrees)
+        # send_to_vehicle(smoothed_angle)
 
 
     # Display the result
