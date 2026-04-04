@@ -68,6 +68,16 @@ while cap.isOpened():
 
 
     # Display the result
+    # 1. Get the dimensions of the current frame
+    height, width, _ = image.shape
+    
+    # 2. Calculate the vertical center
+    center_y = height // 2
+    
+    # 3. Draw a thin horizontal line across the middle
+    # (image, start_point, end_point, color_bgr, thickness)
+    cv2.line(image, (0, center_y), (width, center_y), (0, 0, 255), 1) 
+    
     cv2.imshow('MediaPipe Tasks Hands', cv2.flip(image, 1))
     
     if cv2.waitKey(5) & 0xFF == 27:
