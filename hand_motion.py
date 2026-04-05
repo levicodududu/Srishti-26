@@ -108,38 +108,44 @@ while cap.isOpened():
 
     if detection_result.hand_landmarks and len(detection_result.hand_landmarks) == 2:
 
-        # 1. Calculate the Centroids instead of just taking the wrist [0]
-        h1_x, h1_y = get_hand_centroid(detection_result.hand_landmarks[0])
-        h2_x, h2_y = get_hand_centroid(detection_result.hand_landmarks[1])
+        left_hand_landmarks = None
+        right_hand_landmarks = None
 
-        # 2. Sort to find Left and Right based on the centroid's X position
-        if h1_x < h2_x:
-            left_x, left_y = h1_x, h1_y
-            right_x, right_y = h2_x, h2_y
-        else:
-            left_x, left_y = h2_x, h2_y
-            right_x, right_y = h1_x, h1_y
+        # 1. Ask MediaPipe which hand is which
+        for i in range(2):
+            # Grab the text label ("Left" or "Right") for the current hand
+            hand_label = detection_result.handedness[i][0].category_name
 
-        # 3. Calculate the "Hand Vector" Angle using the centroids
-        dy = left_y - right_y
-        dx = right_x - left_x
-        raw_angle = math.degrees(math.atan2(dy, dx))
+            if hand_label == "Left":
+                right_hand_landmarks = detection_result.hand_landmarks[i]
+            elif hand_label == "Right":
+                left_hand_landmarks = detection_result.hand_landmarks[i]
 
-        # 3. Calibration (Press 'C' to set current position as "Straight")
-        if cv2.waitKey(1) & 0xFF == ord("c"):
-            calibration_offset = raw_angle
-            is_calibrated = True
-            print(f"Calibrated! Offset: {calibration_offset}")
+        # 2. Only proceed if it successfully found one Left and one Right hand
+        if left_hand_landmarks and right_hand_landmarks:
 
-        # 4. Apply Offset and Smooth
-        current_angle = raw_angle - calibration_offset
+            # Get the centroids using your helper function
+            left_x, left_y = get_hand_centroid(left_hand_landmarks)
+            right_x, right_y = get_hand_centroid(right_hand_landmarks)
 
-        # EMA Formula: Smoothed = (New * factor) + (Old * (1 - factor))
-        smoothed_angle = (current_angle * smoothing_factor) + (
-            smoothed_angle * (1 - smoothing_factor)
-        )
+            # 3. Calculate the "Hand Vector" Angle using the centroids
+            dy = left_y - right_y
+            dx = right_x - left_x
+            raw_angle = math.degrees(math.atan2(dy, dx))
 
-        print(f"Raw Angle: {raw_angle}, Smoothed Angle: {smoothed_angle}")
+            # 4. Calibration (Press 'C' to set current position as "Straight")
+            if cv2.waitKey(1) & 0xFF == ord("c"):
+                calibration_offset = raw_angle
+                is_calibrated = True
+                print(f"Calibrated! Offset: {calibration_offset}")
+
+            # 5. Apply Offset and Smooth
+            current_angle = raw_angle - calibration_offset
+            smoothed_angle = (current_angle * smoothing_factor) + (
+                smoothed_angle * (1 - smoothing_factor)
+            )
+
+            print(f"Raw Angle: {raw_angle}, Smoothed Angle: {smoothed_angle}")
 
         # # 5. Output to "Car"
         # # Map this to your controls (e.g., -90 to 90 degrees)
