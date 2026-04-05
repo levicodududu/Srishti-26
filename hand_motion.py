@@ -37,6 +37,49 @@ def get_hand_centroid(hand_landmarks):
     return (x_sum / count), (y_sum / count)
 
 
+def calculate_distance(point1, point2):
+    """A standard math function to find the distance between two X,Y points."""
+    return math.sqrt((point1.x - point2.x) ** 2 + (point1.y - point2.y) ** 2)
+
+
+def get_thumb_extension(hand_landmarks):
+    """
+    Calculates gas/brake based on the visible 2D length of the thumb.
+    When pointing at the screen, it looks short. When raised, it looks long.
+    """
+    # 1. Grab our reference points
+    wrist = hand_landmarks[0]
+    middle_mcp = hand_landmarks[9]  # Used to scale the hand
+    thumb_mcp = hand_landmarks[2]  # Base of the thumb
+    thumb_tip = hand_landmarks[4]  # Tip of the thumb
+
+    # 2. Measure lengths
+    hand_size = calculate_distance(wrist, middle_mcp)
+    visible_thumb_length = calculate_distance(thumb_mcp, thumb_tip)
+
+    # 3. Create the ratio (Visible Thumb Length / Hand Size)
+    # This prevents the depth-perception bug if you move your hands forward
+    if hand_size == 0:
+        return 0.0  # Prevent division by zero
+    ratio = visible_thumb_length / hand_size
+
+    # 4. Apply Deadzone and Max Limits
+    # When pointing at the screen, the ratio is small (usually around 0.3 to 0.4)
+    # When fully raised flat to the camera, the ratio is large (around 0.8 to 1.0)
+    deadzone_ratio = 0.55  # Ignores movement until the thumb is noticeably raised
+    max_ratio = 0.90  # Assumes 100% gas/brake when it reaches this ratio
+
+    # If the thumb isn't raised past the deadzone length, return 0
+    if ratio <= deadzone_ratio:
+        return 0.0
+
+    # 5. Convert the remaining length into a 0.0 to 1.0 percentage
+    extension = (ratio - deadzone_ratio) / (max_ratio - deadzone_ratio)
+
+    # Clamp the final result so it never exceeds 100% (1.0)
+    return max(0.0, min(1.0, extension))
+
+
 while cap.isOpened():
     success, image = cap.read()
     if not success:
@@ -77,6 +120,7 @@ while cap.isOpened():
         (13, 17),
         (0, 17),  # Palm/Knuckles
     ]
+    height, width, _ = image.shape
     # --- STEP 4: Drawing (The Manual Way) ---
     if detection_result.hand_landmarks:
         for hand_landmarks in detection_result.hand_landmarks:
@@ -147,13 +191,51 @@ while cap.isOpened():
 
             print(f"Raw Angle: {raw_angle}, Smoothed Angle: {smoothed_angle}")
 
+            # --- GAS AND BRAKE LOGIC ---
+            # Use our new function to check the left hand (Brake) and right hand (Gas)
+            brake_amount = get_thumb_extension(right_hand_landmarks)
+            gas_amount = get_thumb_extension(left_hand_landmarks)
+
+            # Print it out to see the values update in real-time!
+            print(
+                f"Steering: {int(smoothed_angle)} | Gas: {gas_amount:.2f} | Brake: {brake_amount:.2f}"
+            )
+
+            # Optional: Draw the gas/brake values on the screen
+            cv2.putText(
+                image,
+                f"Gas: {int(gas_amount * 100)}%",
+                (width - 200, 50),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 255, 0),
+                2,
+            )
+            cv2.putText(
+                image,
+                f"Brake: {int(brake_amount * 100)}%",
+                (50, 50),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 0, 255),
+                2,
+            )
+            cv2.putText(
+                image,
+                f"Steering: {int(smoothed_angle)} deg",
+                (width // 2 - 130, 50),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (255, 255, 0),
+                2,
+            )
+
         # # 5. Output to "Car"
         # # Map this to your controls (e.g., -90 to 90 degrees)
         # send_to_vehicle(smoothed_angle)
 
     # Display the result
     # 1. Get the dimensions of the current frame
-    height, width, _ = image.shape
 
     # 2. Calculate the vertical center
     center_y = height // 2
