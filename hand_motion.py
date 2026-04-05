@@ -42,41 +42,42 @@ def calculate_distance(point1, point2):
     return math.sqrt((point1.x - point2.x) ** 2 + (point1.y - point2.y) ** 2)
 
 
+def calculate_3d_distance(point1, point2):
+    """Calculates the 3D distance (Used for a stable hand size)."""
+    return math.sqrt(
+        (point1.x - point2.x) ** 2
+        + (point1.y - point2.y) ** 2
+        + (point1.z - point2.z) ** 2
+    )
+
+
 def get_thumb_extension(hand_landmarks):
-    """
-    Calculates gas/brake based on the visible 2D length of the thumb.
-    When pointing at the screen, it looks short. When raised, it looks long.
-    """
     # 1. Grab our reference points
     wrist = hand_landmarks[0]
-    middle_mcp = hand_landmarks[9]  # Used to scale the hand
-    thumb_mcp = hand_landmarks[2]  # Base of the thumb
-    thumb_tip = hand_landmarks[4]  # Tip of the thumb
+    middle_mcp = hand_landmarks[9]
+    thumb_mcp = hand_landmarks[2]
+    thumb_tip = hand_landmarks[4]
 
     # 2. Measure lengths
-    hand_size = calculate_distance(wrist, middle_mcp)
+    # FIXED: Use 3D distance so the denominator never shrinks when steering!
+    hand_size = calculate_3d_distance(wrist, middle_mcp)
+
+    # Keep 2D distance for the thumb so the foreshortening trick works
     visible_thumb_length = calculate_distance(thumb_mcp, thumb_tip)
 
-    # 3. Create the ratio (Visible Thumb Length / Hand Size)
-    # This prevents the depth-perception bug if you move your hands forward
     if hand_size == 0:
-        return 0.0  # Prevent division by zero
+        return 0.0
+
     ratio = visible_thumb_length / hand_size
 
     # 4. Apply Deadzone and Max Limits
-    # When pointing at the screen, the ratio is small (usually around 0.3 to 0.4)
-    # When fully raised flat to the camera, the ratio is large (around 0.8 to 1.0)
-    deadzone_ratio = 0.55  # Ignores movement until the thumb is noticeably raised
-    max_ratio = 0.90  # Assumes 100% gas/brake when it reaches this ratio
+    deadzone_ratio = 0.55
+    max_ratio = 0.90
 
-    # If the thumb isn't raised past the deadzone length, return 0
     if ratio <= deadzone_ratio:
         return 0.0
 
-    # 5. Convert the remaining length into a 0.0 to 1.0 percentage
     extension = (ratio - deadzone_ratio) / (max_ratio - deadzone_ratio)
-
-    # Clamp the final result so it never exceeds 100% (1.0)
     return max(0.0, min(1.0, extension))
 
 
