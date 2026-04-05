@@ -4,12 +4,12 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 # --- STEP 1: Initialization (Replaces mp_hands.Hands) ---
-base_options = python.BaseOptions(model_asset_path='hand_landmarker.task')
+base_options = python.BaseOptions(model_asset_path="hand_landmarker.task")
 options = vision.HandLandmarkerOptions(
     base_options=base_options,
     num_hands=2,
     min_hand_detection_confidence=0.5,
-    min_tracking_confidence=0.5
+    min_tracking_confidence=0.5,
 )
 detector = vision.HandLandmarker.create_from_options(options)
 
@@ -24,8 +24,18 @@ is_calibrated = False
 
 # Smoothing (Exponential Moving Average)
 # 0.1 = very smooth but laggy | 0.9 = jerky but instant
-smoothing_factor = 0.2 
+smoothing_factor = 0.2
 smoothed_angle = 0.0
+
+
+def get_hand_centroid(hand_landmarks):
+    """Calculates the average X and Y coordinates for all 21 points of a hand."""
+    x_sum = sum([landmark.x for landmark in hand_landmarks])
+    y_sum = sum([landmark.y for landmark in hand_landmarks])
+    count = len(hand_landmarks)  # This will be 21
+
+    return (x_sum / count), (y_sum / count)
+
 
 while cap.isOpened():
     success, image = cap.read()
@@ -45,30 +55,48 @@ while cap.isOpened():
 
     # The connection map for the hand skeleton
     HAND_CONNECTIONS = [
-        (0, 1), (1, 2), (2, 3), (3, 4),             # Thumb
-        (5, 6), (6, 7), (7, 8),                     # Index finger
-        (9, 10), (10, 11), (11, 12),                # Middle finger
-        (13, 14), (14, 15), (15, 16),               # Ring finger
-        (17, 18), (18, 19), (19, 20),               # Pinky
-        (0, 5), (5, 9), (9, 13), (13, 17), (0, 17)  # Palm/Knuckles
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 4),  # Thumb
+        (5, 6),
+        (6, 7),
+        (7, 8),  # Index finger
+        (9, 10),
+        (10, 11),
+        (11, 12),  # Middle finger
+        (13, 14),
+        (14, 15),
+        (15, 16),  # Ring finger
+        (17, 18),
+        (18, 19),
+        (19, 20),  # Pinky
+        (0, 5),
+        (5, 9),
+        (9, 13),
+        (13, 17),
+        (0, 17),  # Palm/Knuckles
     ]
     # --- STEP 4: Drawing (The Manual Way) ---
     if detection_result.hand_landmarks:
         for hand_landmarks in detection_result.hand_landmarks:
-            
+
             # A. DRAW THE LINES FIRST (so they are behind the dots)
             for connection in HAND_CONNECTIONS:
                 start_idx = connection[0]
                 end_idx = connection[1]
-                
+
                 # Get the start and end points
                 start_lm = hand_landmarks[start_idx]
                 end_lm = hand_landmarks[end_idx]
-                
+
                 # Convert normalized (0-1) to pixel coordinates
-                p1 = (int(start_lm.x * image.shape[1]), int(start_lm.y * image.shape[0]))
+                p1 = (
+                    int(start_lm.x * image.shape[1]),
+                    int(start_lm.y * image.shape[0]),
+                )
                 p2 = (int(end_lm.x * image.shape[1]), int(end_lm.y * image.shape[0]))
-                
+
                 # Draw the line (Color: White, Thickness: 2)
                 cv2.line(image, p1, p2, (255, 255, 255), 2)
 
@@ -77,35 +105,39 @@ while cap.isOpened():
                 x = int(landmark.x * image.shape[1])
                 y = int(landmark.y * image.shape[0])
                 cv2.circle(image, (x, y), 5, (0, 255, 0), -1)
-    
-    if detection_result.hand_landmarks and len(detection_result.hand_landmarks) == 2:
-        # 1. Identify hands (using X-position is more stable than AI labels)
-        hand1 = detection_result.hand_landmarks[0][0] # Wrist of first hand
-        hand2 = detection_result.hand_landmarks[1][0] # Wrist of second hand
-        
-        # Sort so we always know which is Left and which is Right
-        if hand1.x < hand2.x:
-            left_h, right_h = hand1, hand2
-        else:
-            left_h, right_h = hand2, hand1
 
-        # 2. Calculate the "Hand Vector" Angle
-        # We use (y_left - y_right) because Y increases downwards in CV
-        dy = left_h.y - right_h.y
-        dx = right_h.x - left_h.x
+    if detection_result.hand_landmarks and len(detection_result.hand_landmarks) == 2:
+
+        # 1. Calculate the Centroids instead of just taking the wrist [0]
+        h1_x, h1_y = get_hand_centroid(detection_result.hand_landmarks[0])
+        h2_x, h2_y = get_hand_centroid(detection_result.hand_landmarks[1])
+
+        # 2. Sort to find Left and Right based on the centroid's X position
+        if h1_x < h2_x:
+            left_x, left_y = h1_x, h1_y
+            right_x, right_y = h2_x, h2_y
+        else:
+            left_x, left_y = h2_x, h2_y
+            right_x, right_y = h1_x, h1_y
+
+        # 3. Calculate the "Hand Vector" Angle using the centroids
+        dy = left_y - right_y
+        dx = right_x - left_x
         raw_angle = math.degrees(math.atan2(dy, dx))
 
         # 3. Calibration (Press 'C' to set current position as "Straight")
-        if cv2.waitKey(1) & 0xFF == ord('c'):
+        if cv2.waitKey(1) & 0xFF == ord("c"):
             calibration_offset = raw_angle
             is_calibrated = True
             print(f"Calibrated! Offset: {calibration_offset}")
 
         # 4. Apply Offset and Smooth
         current_angle = raw_angle - calibration_offset
-        
+
         # EMA Formula: Smoothed = (New * factor) + (Old * (1 - factor))
-        smoothed_angle = (current_angle * smoothing_factor) + (smoothed_angle * (1 - smoothing_factor))
+        smoothed_angle = (current_angle * smoothing_factor) + (
+            smoothed_angle * (1 - smoothing_factor)
+        )
 
         print(f"Raw Angle: {raw_angle}, Smoothed Angle: {smoothed_angle}")
 
@@ -113,23 +145,22 @@ while cap.isOpened():
         # # Map this to your controls (e.g., -90 to 90 degrees)
         # send_to_vehicle(smoothed_angle)
 
-
     # Display the result
     # 1. Get the dimensions of the current frame
     height, width, _ = image.shape
-    
+
     # 2. Calculate the vertical center
     center_y = height // 2
-    
+
     # 3. Draw a thin horizontal line across the middle
     # (image, start_point, end_point, color_bgr, thickness)
-    cv2.line(image, (0, center_y), (width, center_y), (0, 0, 255), 1) 
-    
-    cv2.imshow('MediaPipe Tasks Hands', cv2.flip(image, 1))
-    
+    cv2.line(image, (0, center_y), (width, center_y), (0, 0, 255), 1)
+
+    cv2.imshow("MediaPipe Tasks Hands", cv2.flip(image, 1))
+
     if cv2.waitKey(5) & 0xFF == 27:
         break
 
-detector.close() # Important to release resources
+detector.close()  # Important to release resources
 cap.release()
 cv2.destroyAllWindows()
