@@ -41,45 +41,35 @@ def calculate_distance(point1, point2):
     """A standard math function to find the distance between two X,Y points."""
     return math.sqrt((point1.x - point2.x) ** 2 + (point1.y - point2.y) ** 2)
 
-
 def calculate_3d_distance(point1, point2):
-    """Calculates the 3D distance (Used for a stable hand size)."""
-    return math.sqrt(
-        (point1.x - point2.x) ** 2
-        + (point1.y - point2.y) ** 2
-        + (point1.z - point2.z) ** 2
-    )
+    """A standard math function to find the distance between two X,Y,Z points."""
+    return math.sqrt((point1.x - point2.x) ** 2 + (point1.y - point2.y) ** 2 + (point1.z - point2.z) ** 2)
 
-
-def get_thumb_extension(hand_landmarks):
-    # 1. Grab our reference points
+def get_thumb_extension(hand_landmarks, min_r, max_r):
     wrist = hand_landmarks[0]
     middle_mcp = hand_landmarks[9]
-    thumb_mcp = hand_landmarks[2]
+    pinky_mcp = hand_landmarks[17]
     thumb_tip = hand_landmarks[4]
 
-    # 2. Measure lengths
-    # FIXED: Use 3D distance so the denominator never shrinks when steering!
+    # 3D scale is a must for calibration to hold up during turns
     hand_size = calculate_3d_distance(wrist, middle_mcp)
+    extension_dist = calculate_distance(pinky_mcp, thumb_tip)
 
-    # Keep 2D distance for the thumb so the foreshortening trick works
-    visible_thumb_length = calculate_distance(thumb_mcp, thumb_tip)
+    if hand_size == 0: return 0.0
+    
+    current_ratio = extension_dist / hand_size
+    
+    # Use the calibrated min/max instead of hardcoded numbers
+    val = (current_ratio - min_r) / (max_r - min_r)
+    return max(0.0, min(1.0, val))
 
-    if hand_size == 0:
-        return 0.0
+# Calibration States
+# Start with safe defaults, but these will be overwritten
+calib_min_left, calib_max_left = 0.5, 1.0
+calib_min_right, calib_max_right = 0.5, 1.0
 
-    ratio = visible_thumb_length / hand_size
-
-    # 4. Apply Deadzone and Max Limits
-    deadzone_ratio = 0.55
-    max_ratio = 0.90
-
-    if ratio <= deadzone_ratio:
-        return 0.0
-
-    extension = (ratio - deadzone_ratio) / (max_ratio - deadzone_ratio)
-    return max(0.0, min(1.0, extension))
-
+# Instruction tracking
+calib_step = 0
 
 while cap.isOpened():
     success, image = cap.read()
@@ -178,58 +168,73 @@ while cap.isOpened():
             dx = right_x - left_x
             raw_angle = math.degrees(math.atan2(dy, dx))
 
-            # 4. Calibration (Press 'C' to set current position as "Straight")
-            if cv2.waitKey(1) & 0xFF == ord("c"):
-                calibration_offset = raw_angle
-                is_calibrated = True
-                print(f"Calibrated! Offset: {calibration_offset}")
+            # --- CALIBRATION LOGIC ---
+            key = cv2.waitKey(1) & 0xFF
+
+            if key == ord('c'):
+                # Set IDLE (0% Gas/Brake) - Hold thumbs against your palm
+                calib_min_left = calculate_distance(left_hand_landmarks[17], left_hand_landmarks[4]) / calculate_3d_distance(left_hand_landmarks[0], left_hand_landmarks[9])
+                calib_min_right = calculate_distance(right_hand_landmarks[17], right_hand_landmarks[4]) / calculate_3d_distance(right_hand_landmarks[0], right_hand_landmarks[9])
+                calibration_offset = raw_angle # Also zero out steering
+                print(f"Zero set! L_Min: {calib_min_left:.2f}, R_Min: {calib_min_right:.2f}")
+
+            elif key == ord('x'):
+                # Set MAX (100% Gas/Brake) - Extend thumbs fully
+                calib_max_left = calculate_distance(left_hand_landmarks[17], left_hand_landmarks[4]) / calculate_3d_distance(left_hand_landmarks[0], left_hand_landmarks[9])
+                calib_max_right = calculate_distance(right_hand_landmarks[17], right_hand_landmarks[4]) / calculate_3d_distance(right_hand_landmarks[0], right_hand_landmarks[9])
+                print(f"Max set! L_Max: {calib_max_left:.2f}, R_Max: {calib_max_right:.2f}")
+
+            # --- CALCULATE OUTPUTS ---
+            gas_amount = get_thumb_extension(left_hand_landmarks, calib_min_left, calib_max_left)
+            brake_amount = get_thumb_extension(right_hand_landmarks, calib_min_right, calib_max_right)
 
             # 5. Apply Offset and Smooth
             current_angle = raw_angle - calibration_offset
-            smoothed_angle = (current_angle * smoothing_factor) + (
-                smoothed_angle * (1 - smoothing_factor)
-            )
+            smoothed_angle = (current_angle * smoothing_factor) + ( smoothed_angle * (1 - smoothing_factor))
 
-            print(f"Raw Angle: {raw_angle}, Smoothed Angle: {smoothed_angle}")
-
-            # --- GAS AND BRAKE LOGIC ---
-            # Use our new function to check the left hand (Brake) and right hand (Gas)
-            brake_amount = get_thumb_extension(right_hand_landmarks)
-            gas_amount = get_thumb_extension(left_hand_landmarks)
+            # print(f"Raw Angle: {raw_angle}, Smoothed Angle: {smoothed_angle}")
 
             # Print it out to see the values update in real-time!
-            print(
-                f"Steering: {int(smoothed_angle)} | Gas: {gas_amount:.2f} | Brake: {brake_amount:.2f}"
-            )
 
-            # Optional: Draw the gas/brake values on the screen
-            cv2.putText(
-                image,
-                f"Gas: {int(gas_amount * 100)}%",
-                (width - 200, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 255, 0),
-                2,
-            )
-            cv2.putText(
-                image,
-                f"Brake: {int(brake_amount * 100)}%",
-                (50, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 0, 255),
-                2,
-            )
-            cv2.putText(
-                image,
-                f"Steering: {int(smoothed_angle)} deg",
-                (width // 2 - 130, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (255, 255, 0),
-                2,
-            )
+
+            # # Optional: Draw the gas/brake values on the screen
+            # cv2.putText(
+            #     image,
+            #     f"Gas: {int(gas_amount * 100)}%",
+            #     (width - 200, 50),
+            #     cv2.FONT_HERSHEY_SIMPLEX,
+            #     1,
+            #     (0, 255, 0),
+            #     2,
+            # )
+            # cv2.putText(
+            #     image,
+            #     f"Brake: {int(brake_amount * 100)}%",
+            #     (50, 50),
+            #     cv2.FONT_HERSHEY_SIMPLEX,
+            #     1,
+            #     (0, 0, 255),
+            #     2,
+            # )
+            # cv2.putText(
+            #     image,
+            #     f"Steering: {int(smoothed_angle)} deg",
+            #     (width // 2 - 130, 50),
+            #     cv2.FONT_HERSHEY_SIMPLEX,
+            #     1,
+            #     (255, 255, 0),
+            #     2,
+            # )
+
+            # Simple deadzone: If thumb is just resting, don't accelerate
+
+            print(f"Steering: {int(smoothed_angle)} | Gas: {int(gas_amount*100)} | Brake: {int(brake_amount*100)}")
+
+            # # Optional: Visualize as a vertical bar on the screen
+            # # Gas bar (Green)
+            # cv2.rectangle(image, (width - 50, 400), (width - 20, 400 - int(gas_amount * 200)), (0, 255, 0), -1)
+            # # Brake bar (Red)
+            # cv2.rectangle(image, (20, 400), (50, 400 - int(brake_amount * 200)), (0, 0, 255), -1)
 
         # # 5. Output to "Car"
         # # Map this to your controls (e.g., -90 to 90 degrees)
