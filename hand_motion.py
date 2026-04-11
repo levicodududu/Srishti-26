@@ -172,7 +172,7 @@ while cap.isOpened():
             brake = 1 if delta_left < DYNAMIC_THRESHOLD else 0
             gas = 1 if delta_right < DYNAMIC_THRESHOLD else 0
 
-            print(f"Steer: {int(smoothed_angle):>4} | GAS (R): {gas} | BRAKE (L): {brake} | Z-Delta: {delta_right:.3f}")
+            print(f"Steer: {int(smoothed_angle):>4} | GAS (L): {gas} | BRAKE (R): {brake} | Z-Delta: {delta_right:.3f}")
 
         # # 5. Output to "Car"
         # # Map this to your controls (e.g., -90 to 90 degrees)
