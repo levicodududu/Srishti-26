@@ -26,7 +26,7 @@ is_calibrated = False
 calib_z_left = 0.0
 calib_z_right = 0.0
 # How much the finger needs to move toward the camera to trigger (Tweak this!)
-PADDLE_THRESHOLD = -0.0015
+DYNAMIC_THRESHOLD = -0.15
 
 # Smoothing (Exponential Moving Average)
 # 0.1 = very smooth but laggy | 0.9 = jerky but instant
@@ -41,6 +41,14 @@ def get_hand_centroid(hand_landmarks):
     count = len(hand_landmarks)  # This will be 21
 
     return (x_sum / count), (y_sum / count)
+
+def calculate_distance(point1, point2):
+    """A standard math function to find the 2D distance between two points."""
+    return math.sqrt((point1.x - point2.x) ** 2 + (point1.y - point2.y) ** 2)
+
+def calculate_3d_distance(point1, point2):
+    """Calculates the 3D distance between two points."""
+    return math.sqrt((point1.x - point2.x)**2 + (point1.y - point2.y)**2 + (point1.z - point2.z)**2)
 
 def get_paddle_z(hand_landmarks):
     """Averages the Z (depth) of the Middle, Ring, and Pinky fingertips."""
@@ -67,27 +75,12 @@ while cap.isOpened():
 
     # The connection map for the hand skeleton
     HAND_CONNECTIONS = [
-        (0, 1),
-        (1, 2),
-        (2, 3),
-        (3, 4),  # Thumb
-        (5, 6),
-        (6, 7),
-        (7, 8),  # Index finger
-        (9, 10),
-        (10, 11),
-        (11, 12),  # Middle finger
-        (13, 14),
-        (14, 15),
-        (15, 16),  # Ring finger
-        (17, 18),
-        (18, 19),
-        (19, 20),  # Pinky
-        (0, 5),
-        (5, 9),
-        (9, 13),
-        (13, 17),
-        (0, 17),  # Palm/Knuckles
+        (0, 1), (1, 2), (2, 3), (3, 4),        # Thumb
+        (5, 6), (6, 7), (7, 8),                # Index finger
+        (9, 10), (10, 11), (11, 12),           # Middle finger
+        (13, 14), (14, 15), (15, 16),          # Ring finger
+        (17, 18), (18, 19), (19, 20),          # Pinky
+        (0, 5), (5, 9), (9, 13), (13, 17), (0, 17) # Palm
     ]
     # --- STEP 4: Drawing (The Manual Way) ---
     if detection_result.hand_landmarks:
@@ -162,20 +155,22 @@ while cap.isOpened():
                 smoothed_angle * (1 - smoothing_factor)
             )
 
-            # --- F1 PADDLE SHIFTER LOGIC ---
+            # --- 5. F1 PADDLE SHIFTER LOGIC (Auto-Scaling) ---
+            # Get current 2D hand size (Wrist to Middle Knuckle) as our "ruler"
+            left_hand_size = calculate_distance(left_hand_landmarks[0], left_hand_landmarks[9])
+            right_hand_size = calculate_distance(right_hand_landmarks[0], right_hand_landmarks[9])
+
             # Get current Z depth
             current_z_left = get_paddle_z(left_hand_landmarks)
             current_z_right = get_paddle_z(right_hand_landmarks)
 
-            # Calculate the delta (Current Z minus Resting Z)
-            # If fingers move toward camera, delta becomes negative
-            delta_left = current_z_left - calib_z_left
-            delta_right = current_z_right - calib_z_right
+            # Calculate Delta and DIVIDE by hand size (Converts to percentage)
+            delta_left = (current_z_left - calib_z_left) / left_hand_size if left_hand_size > 0 else 0
+            delta_right = (current_z_right - calib_z_right) / right_hand_size if right_hand_size > 0 else 0
 
             # Trigger is 1 if the delta passes our negative threshold
-            # Left Hand = Brake, Right Hand = Gas
-            brake = 1 if delta_left < PADDLE_THRESHOLD else 0
-            gas = 1 if delta_right < PADDLE_THRESHOLD else 0
+            brake = 1 if delta_left < DYNAMIC_THRESHOLD else 0
+            gas = 1 if delta_right < DYNAMIC_THRESHOLD else 0
 
             print(f"Steer: {int(smoothed_angle):>4} | GAS (R): {gas} | BRAKE (L): {brake} | Z-Delta: {delta_right:.3f}")
 
