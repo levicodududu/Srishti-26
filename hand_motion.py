@@ -20,12 +20,92 @@ import math
 # Steering State
 steering_angle = 0.0
 calibration_offset = 0.0
-is_calibrated = False
+import time
+
+
+class CalibState:
+    WAITING = "WAITING"
+    COUNTDOWN = "COUNTDOWN"
+    CALIBRATED = "CALIBRATED"
+
+
+calib_state = CalibState.WAITING
+countdown_start = 0.0
+COUNTDOWN_SECONDS = 3  # change to whatever length you want
+calib_curl_left = 0.0
+calib_curl_right = 0.0
+# Normalized by hand size. Tune between 0.15–0.30.
+# Higher = needs a more deliberate curl inward to trigger.
+PROTRUSION_THRESHOLD = 0.50
 
 # Smoothing (Exponential Moving Average)
 # 0.1 = very smooth but laggy | 0.9 = jerky but instant
 smoothing_factor = 0.2
 smoothed_angle = 0.0
+
+
+def draw_calibration_overlay(image, state, countdown_start, countdown_seconds):
+    """Draws the calibration status and countdown on the frame."""
+    height, width, _ = image.shape
+    cx = width // 2
+
+    # Safe defaults — overwritten by whichever branch matches
+    text = ""
+    color = (255, 255, 255)
+    scale = 0.7
+    thickness = 2
+    y = height - 30
+
+    if state == CalibState.WAITING:
+        text = "Show both hands to calibrate"
+        color = (0, 200, 255)
+
+    elif state == CalibState.COUNTDOWN:
+        elapsed = time.time() - countdown_start
+        remaining = countdown_seconds - elapsed
+        number = math.ceil(remaining)
+
+        big_text = str(number)
+        big_scale = 5.0
+        big_thick = 8
+
+        (tw, th), _ = cv2.getTextSize(
+            big_text, cv2.FONT_HERSHEY_SIMPLEX, big_scale, big_thick
+        )
+        cv2.putText(
+            image,
+            big_text,
+            (cx - tw // 2, height // 2 + th // 2),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            big_scale,
+            (0, 200, 255),
+            big_thick,
+        )
+
+        bar_width = int((elapsed / countdown_seconds) * width)
+        cv2.rectangle(image, (0, height - 10), (bar_width, height), (0, 200, 255), -1)
+
+        text = "Hold your resting grip..."
+        color = (0, 200, 255)
+        y = height - 20
+
+    elif state == CalibState.CALIBRATED:
+        text = "Calibrated!"
+        color = (0, 255, 80)
+        scale = 0.8
+
+    # Only draw the bottom text if there's something to show
+    if text:
+        (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+        cv2.putText(
+            image,
+            text,
+            (cx - tw // 2, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            scale,
+            color,
+            thickness,
+        )
 
 
 def get_hand_centroid(hand_landmarks):
@@ -38,12 +118,12 @@ def get_hand_centroid(hand_landmarks):
 
 
 def calculate_distance(point1, point2):
-    """A standard math function to find the distance between two X,Y points."""
+    """A standard math function to find the 2D distance between two points."""
     return math.sqrt((point1.x - point2.x) ** 2 + (point1.y - point2.y) ** 2)
 
 
 def calculate_3d_distance(point1, point2):
-    """Calculates the 3D distance (Used for a stable hand size)."""
+    """Calculates the 3D distance between two points."""
     return math.sqrt(
         (point1.x - point2.x) ** 2
         + (point1.y - point2.y) ** 2
@@ -51,34 +131,23 @@ def calculate_3d_distance(point1, point2):
     )
 
 
-def get_thumb_extension(hand_landmarks):
-    # 1. Grab our reference points
-    wrist = hand_landmarks[0]
-    middle_mcp = hand_landmarks[9]
-    thumb_mcp = hand_landmarks[2]
-    thumb_tip = hand_landmarks[4]
 
-    # 2. Measure lengths
-    # FIXED: Use 3D distance so the denominator never shrinks when steering!
-    hand_size = calculate_3d_distance(wrist, middle_mcp)
+def get_finger_curl(hand_landmarks):
+    """
+    Measures average extension of middle, ring, pinky fingers
+    as distance from fingertip to its own base knuckle (MCP).
+    Extended = large value. Curled toward palm = small value.
+    Completely invariant to hand rotation or steering angle.
+    MCP landmarks: 9 (middle), 13 (ring), 17 (pinky)
+    Tip landmarks: 12 (middle), 16 (ring), 20 (pinky)
+    """
+    mid = calculate_3d_distance(hand_landmarks[12], hand_landmarks[9])
+    ring = calculate_3d_distance(hand_landmarks[16], hand_landmarks[13])
+    pinky = calculate_3d_distance(hand_landmarks[20], hand_landmarks[17])
+    avg = (mid + ring + pinky) / 3.0
 
-    # Keep 2D distance for the thumb so the foreshortening trick works
-    visible_thumb_length = calculate_distance(thumb_mcp, thumb_tip)
-
-    if hand_size == 0:
-        return 0.0
-
-    ratio = visible_thumb_length / hand_size
-
-    # 4. Apply Deadzone and Max Limits
-    deadzone_ratio = 0.55
-    max_ratio = 0.90
-
-    if ratio <= deadzone_ratio:
-        return 0.0
-
-    extension = (ratio - deadzone_ratio) / (max_ratio - deadzone_ratio)
-    return max(0.0, min(1.0, extension))
+    hand_size = calculate_3d_distance(hand_landmarks[0], hand_landmarks[9])
+    return avg / hand_size if hand_size > 0 else 0.0
 
 
 while cap.isOpened():
@@ -119,9 +188,8 @@ while cap.isOpened():
         (5, 9),
         (9, 13),
         (13, 17),
-        (0, 17),  # Palm/Knuckles
+        (0, 17),  # Palm
     ]
-    height, width, _ = image.shape
     # --- STEP 4: Drawing (The Manual Way) ---
     if detection_result.hand_landmarks:
         for hand_landmarks in detection_result.hand_landmarks:
@@ -173,16 +241,34 @@ while cap.isOpened():
             left_x, left_y = get_hand_centroid(left_hand_landmarks)
             right_x, right_y = get_hand_centroid(right_hand_landmarks)
 
+            wheel_center = ((left_x + right_x) / 2, (left_y + right_y) / 2)
+
+            current_curl_left = get_finger_curl(left_hand_landmarks)
+            current_curl_right = get_finger_curl(right_hand_landmarks)
             # 3. Calculate the "Hand Vector" Angle using the centroids
             dy = left_y - right_y
             dx = right_x - left_x
             raw_angle = math.degrees(math.atan2(dy, dx))
 
-            # 4. Calibration (Press 'C' to set current position as "Straight")
+            if calib_state == CalibState.WAITING:
+                # Both hands just appeared — kick off the countdown
+                calib_state = CalibState.COUNTDOWN
+                countdown_start = time.time()
+            elif calib_state == CalibState.COUNTDOWN:
+                if time.time() - countdown_start >= COUNTDOWN_SECONDS:
+                    calibration_offset = raw_angle
+                    calib_curl_left = current_curl_left
+                    calib_curl_right = current_curl_right
+                    calib_state = CalibState.CALIBRATED
+                    print("Auto-calibrated!")
+
+            # 4. Calibration (Press 'C' while holding your normal F1 Grip)
             if cv2.waitKey(1) & 0xFF == ord("c"):
                 calibration_offset = raw_angle
+                calib_protrusion_left = current_curl_left
+                calib_protrusion_right = current_curl_right
                 is_calibrated = True
-                print(f"Calibrated! Offset: {calibration_offset}")
+                print("Calibrated! Steering and Paddles set.")
 
             # 5. Apply Offset and Smooth
             current_angle = raw_angle - calibration_offset
@@ -190,53 +276,45 @@ while cap.isOpened():
                 smoothed_angle * (1 - smoothing_factor)
             )
 
-            print(f"Raw Angle: {raw_angle}, Smoothed Angle: {smoothed_angle}")
-
-            # --- GAS AND BRAKE LOGIC ---
-            # Use our new function to check the left hand (Brake) and right hand (Gas)
-            brake_amount = get_thumb_extension(right_hand_landmarks)
-            gas_amount = get_thumb_extension(left_hand_landmarks)
-
-            # Print it out to see the values update in real-time!
-            print(
-                f"Steering: {int(smoothed_angle)} | Gas: {gas_amount:.2f} | Brake: {brake_amount:.2f}"
+            # --- 5. F1 PADDLE SHIFTER LOGIC (Auto-Scaling) ---
+            # Get current 2D hand size (Wrist to Middle Knuckle) as our "ruler"
+            left_hand_size = calculate_distance(
+                left_hand_landmarks[0], left_hand_landmarks[9]
+            )
+            right_hand_size = calculate_distance(
+                right_hand_landmarks[0], right_hand_landmarks[9]
             )
 
-            # Optional: Draw the gas/brake values on the screen
-            cv2.putText(
-                image,
-                f"Gas: {int(gas_amount * 100)}%",
-                (width - 200, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 255, 0),
-                2,
-            )
-            cv2.putText(
-                image,
-                f"Brake: {int(brake_amount * 100)}%",
-                (50, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 0, 255),
-                2,
-            )
-            cv2.putText(
-                image,
-                f"Steering: {int(smoothed_angle)} deg",
-                (width // 2 - 130, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (255, 255, 0),
-                2,
-            )
+            # Trigger is 1 if the delta passes our negative threshold
+            brake = gas = 0
+            if calib_state == CalibState.CALIBRATED:
+                current_angle = raw_angle - calibration_offset
+                smoothed_angle = (current_angle * smoothing_factor) + (
+                    smoothed_angle * (1 - smoothing_factor)
+                )
+
+                delta_left = current_curl_left - calib_curl_left
+                delta_right = current_curl_right - calib_curl_right
+
+                brake = 1 if delta_left > PROTRUSION_THRESHOLD else 0
+                gas = 1 if delta_right > PROTRUSION_THRESHOLD else 0
+
+                print(
+                    f"Steer: {int(smoothed_angle):>4} | GAS (R): {gas} | BRAKE (L): {brake} | ΔL: {delta_left:.3f}  ΔR: {delta_right:.3f}"
+                )
 
         # # 5. Output to "Car"
         # # Map this to your controls (e.g., -90 to 90 degrees)
         # send_to_vehicle(smoothed_angle)
+    else:
+        # Lost both hands — drop back to WAITING so it re-calibrates on return
+        if calib_state != CalibState.WAITING:
+            calib_state = CalibState.WAITING
+            print("Hands lost — will re-calibrate on next appearance.")
 
     # Display the result
     # 1. Get the dimensions of the current frame
+    height, width, _ = image.shape
 
     # 2. Calculate the vertical center
     center_y = height // 2
@@ -244,6 +322,7 @@ while cap.isOpened():
     # 3. Draw a thin horizontal line across the middle
     # (image, start_point, end_point, color_bgr, thickness)
     cv2.line(image, (0, center_y), (width, center_y), (0, 0, 255), 1)
+    draw_calibration_overlay(image, calib_state, countdown_start, COUNTDOWN_SECONDS)
 
     cv2.imshow("MediaPipe Tasks Hands", cv2.flip(image, 1))
 
