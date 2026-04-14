@@ -381,7 +381,7 @@ while cap.isOpened():
     # Draw HUD
     cv2.putText(image, f"Gas: {int(gas * 100)}%", (width - 190, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     cv2.putText(image, f"Brake: {int(brake * 100)}%", (width // 2 - 40, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-    cv2.putText(image, f"Steering: {int(steer_to_send)}°", (width // 2 - 250, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+    cv2.putText(image, f"Steering: {int(steer_to_send)} deg", (width // 2 - 250, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
     cv2.imshow("MediaPipe Tasks Hands", image)
 
