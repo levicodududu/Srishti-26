@@ -45,6 +45,8 @@ smoothing_factor = 0.2  # 0.1 smooth but laggy | 0.9 fast but jerky
 
 PROTRUSION_THRESHOLD = 0.50
 
+hands_lost_time = None
+LOST_THRESHOLD_SECONDS = 5.0
 
 class CalibState:
     WAITING = "WAITING"
@@ -265,6 +267,9 @@ while cap.isOpened():
                 left_hand_landmarks = detection_result.hand_landmarks[i]
 
         if left_hand_landmarks is not None and right_hand_landmarks is not None:
+            # --- HANDS ARE GOOD: RESET TIMER ---
+            hands_lost_time = None
+            
             left_x, left_y = get_hand_centroid(left_hand_landmarks)
             right_x, right_y = get_hand_centroid(right_hand_landmarks)
 
@@ -307,51 +312,22 @@ while cap.isOpened():
                     f"GAS (R): {gas:.0f} | BRAKE (L): {brake:.0f} | "
                     f"ΔL: {delta_left:.3f}  ΔR: {delta_right:.3f}"
                 )
-            else:
-                steer_to_send = 0.0
-                gas = 0.0
-                brake = 1.0
+            
+           
 
-            # Draw HUD
-            cv2.putText(
-                image,
-                f"Gas: {int(gas * 100)}%",
-                (width - 220, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 255, 0),
-                2,
-            )
-            cv2.putText(
-                image,
-                f"Brake: {int(brake * 100)}%",
-                (50, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 0, 255),
-                2,
-            )
-            cv2.putText(
-                image,
-                f"Steering: {int(steer_to_send)} deg",
-                (width // 2 - 160, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (255, 255, 0),
-                2,
-            )
-        else:
-            # # Only one true left/right pair not found
-            # if calib_state != CalibState.WAITING:
-            #     calib_state = CalibState.WAITING
-            #     print("Hands lost — will re-calibrate on next appearance.")
-            pass
-    else:
-        # Lost hands entirely
-        if calib_state != CalibState.WAITING:
-            calib_state = CalibState.WAITING
-            print("Hands lost — will re-calibrate on next appearance.")
-            client.reset()
+    # --- GRACE PERIOD LOGIC (Replaces the old 'else' blocks) ---
+    # If the timer isn't None, it means the code above DID NOT find two good hands
+    if hands_lost_time is not None or not (detection_result.hand_landmarks and len(detection_result.hand_landmarks) == 2) or (left_hand_landmarks is None or right_hand_landmarks is None):
+        # 1. Start the stopwatch if it hasn't been started yet
+        if hands_lost_time is None:
+            hands_lost_time = time.time()
+        # 2. Check if 5 seconds have passed
+        if time.time() - hands_lost_time > LOST_THRESHOLD_SECONDS:
+            if calib_state != CalibState.WAITING:
+                calib_state = CalibState.WAITING
+                print("Hands lost for 5 seconds — resetting to WAITING state.")
+                client.reset()
+    
 
     # -----------------------------------------------------
     # Manual calibration / exit keys
@@ -394,13 +370,20 @@ while cap.isOpened():
     # -----------------------------------------------------
     send_to_vehicle(steer_to_send, gas, brake)
 
+    image = cv2.flip(image, 1)
+
     # Middle guide line
     center_y = height // 2
     cv2.line(image, (0, center_y), (width, center_y), (0, 0, 255), 1)
 
     draw_calibration_overlay(image, calib_state, countdown_start, COUNTDOWN_SECONDS)
 
-    cv2.imshow("MediaPipe Tasks Hands", cv2.flip(image, 1))
+    # Draw HUD
+    cv2.putText(image, f"Gas: {int(gas * 100)}%", (width - 190, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    cv2.putText(image, f"Brake: {int(brake * 100)}%", (width // 2 - 40, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    cv2.putText(image, f"Steering: {int(steer_to_send)} deg", (width // 2 - 250, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+
+    cv2.imshow("MediaPipe Tasks Hands", image)
 
 # =========================================================
 # 8. CLEANUP
