@@ -7,6 +7,14 @@ import pathlib
 import math
 import time
 
+# =========================
+# ARDUINO SERIAL SUPPORT
+# =========================
+try:
+    import serial
+except ImportError:
+    serial = None
+
 # =========================================================
 # 1. MODEL / CAMERA SETUP
 # =========================================================
@@ -34,6 +42,77 @@ client.enableApiControl(True)
 client.reset()
 
 # =========================================================
+# 2.5 ARDUINO CONNECTION
+# =========================================================
+# Change this to your Arduino COM port
+ARDUINO_PORT = "COM4"
+ARDUINO_BAUD = 9600
+ARDUINO_ENABLED = True
+
+# hysteresis thresholds so the serial command does not chatter
+LEFT_STEER_THRESHOLD = -0.25
+RIGHT_STEER_THRESHOLD = 0.25
+
+arduino = None
+last_arduino_cmd = None
+
+def connect_arduino():
+    global arduino
+
+    if not ARDUINO_ENABLED:
+        print("[Arduino] Disabled.")
+        return
+
+    if serial is None:
+        print("[Arduino] pyserial not installed. Run: pip install pyserial")
+        return
+
+    try:
+        arduino = serial.Serial(ARDUINO_PORT, ARDUINO_BAUD, timeout=0.1)
+        time.sleep(2.0)  # allow Arduino reset
+        print(f"[Arduino] Connected on {ARDUINO_PORT} @ {ARDUINO_BAUD}")
+    except Exception as e:
+        arduino = None
+        print(f"[Arduino] Connection failed: {e}")
+
+def send_arduino_command(cmd: str):
+    global last_arduino_cmd
+
+    if arduino is None:
+        return
+
+    if cmd == last_arduino_cmd:
+        return
+
+    try:
+        arduino.write((cmd + "\n").encode("utf-8"))
+        last_arduino_cmd = cmd
+        print(f"[Arduino] Sent: {cmd}")
+    except Exception as e:
+        print(f"[Arduino] Write failed: {e}")
+
+def update_arduino_from_steering(steer_cmd: float):
+    """
+    steer_cmd in [-1, 1]
+
+    Current mapping:
+      steer left  -> 'L'  -> blink LED
+      steer right -> 'R'  -> LED off
+      center      -> 'C'  -> neutral
+
+    If your steering sign is reversed in practice,
+    swap the first two branches below.
+    """
+    if steer_cmd <= LEFT_STEER_THRESHOLD:
+        send_arduino_command("L")
+    elif steer_cmd >= RIGHT_STEER_THRESHOLD:
+        send_arduino_command("R")
+    else:
+        send_arduino_command("C")
+
+connect_arduino()
+
+# =========================================================
 # 3. CONTROL / CALIBRATION STATE
 # =========================================================
 steering_angle = 0.0
@@ -51,7 +130,7 @@ LOST_THRESHOLD_SECONDS = 5.0
 # behavior:
 # left hand open  -> activate speed hold to target speed
 # right hand open -> hand brake
-TARGET_SPEED_MPS = 4.0
+TARGET_SPEED_MPS = 9.0
 
 # command smoothing
 smoothed_steering_cmd = 0.0
@@ -97,7 +176,7 @@ calib_curl_right = 0.0
 
 # performance helpers
 frame_count = 0
-PROCESS_EVERY_N_FRAMES = 1   # set to 2 if you want less CPU use
+PROCESS_EVERY_N_FRAMES = 1
 last_print_time = 0.0
 PRINT_INTERVAL = 0.20
 last_loop_time = time.time()
@@ -223,7 +302,7 @@ def send_to_vehicle(steering_cmd, drive_cmd):
     brake = max(0.0, -drive_cmd)
 
     car_controls = fsds.CarControls()
-    car_controls.steering = steering_cmd * 1.5  # amplify steering for more responsiveness
+    car_controls.steering = steering_cmd * 1.5
     car_controls.throttle = throttle
     car_controls.brake = brake
     client.setCarControls(car_controls)
@@ -244,7 +323,6 @@ while cap.isOpened():
 
     frame_count += 1
 
-    # Run detection every N frames
     if frame_count % PROCESS_EVERY_N_FRAMES == 0:
         rgb_frame = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
@@ -258,9 +336,6 @@ while cap.isOpened():
     left_hand_landmarks = None
     right_hand_landmarks = None
 
-    # -----------------------------------------------------
-    # Draw hand skeletons
-    # -----------------------------------------------------
     if detection_result and detection_result.hand_landmarks:
         for hand_landmarks in detection_result.hand_landmarks:
             for start_idx, end_idx in HAND_CONNECTIONS:
@@ -276,15 +351,11 @@ while cap.isOpened():
                 y = int(landmark.y * height)
                 cv2.circle(image, (x, y), 5, (0, 255, 0), -1)
 
-    # default safe output
     steer_cmd = 0.0
     drive_cmd = 0.0
     left_open = False
     right_open = False
 
-    # -----------------------------------------------------
-    # Detect both hands and classify left/right
-    # -----------------------------------------------------
     if detection_result and detection_result.hand_landmarks and len(detection_result.hand_landmarks) == 2:
         for i in range(2):
             hand_label = detection_result.handedness[i][0].category_name
@@ -334,7 +405,6 @@ while cap.isOpened():
                 left_open = delta_left > PROTRUSION_THRESHOLD
                 right_open = delta_right > PROTRUSION_THRESHOLD
 
-                # steering always available when both hands visible
                 raw_steer_cmd = max(-1.0, min(1.0, smoothed_angle / 90.0))
                 smoothed_steering_cmd = (
                     STEER_ALPHA * raw_steer_cmd
@@ -344,7 +414,7 @@ while cap.isOpened():
 
                 current_speed = get_vehicle_speed()
 
-                # SWAPPED BEHAVIOR:
+                # current behavior kept as-is from your latest logic
                 # left hand open = hand brake
                 if left_open:
                     target_drive = -1.0
@@ -376,9 +446,6 @@ while cap.isOpened():
                         f"ΔL: {delta_left:.3f} ΔR: {delta_right:.3f}"
                     )
 
-    # -----------------------------------------------------
-    # Grace-period / reset logic
-    # -----------------------------------------------------
     hands_good = (
         detection_result
         and detection_result.hand_landmarks
@@ -388,7 +455,6 @@ while cap.isOpened():
     )
 
     if not hands_good:
-        # no hands visible => no controller inputs
         steer_cmd = 0.0
         drive_cmd = 0.0
         speed_pid.reset()
@@ -402,9 +468,6 @@ while cap.isOpened():
                 print("Hands lost for 5 seconds — resetting to WAITING state.")
                 client.reset()
 
-    # -----------------------------------------------------
-    # Manual calibration / exit keys
-    # -----------------------------------------------------
     key = cv2.waitKey(1) & 0xFF
 
     if key == ord("c"):
@@ -434,13 +497,14 @@ while cap.isOpened():
                 speed_pid.reset()
                 print("Manual calibration complete!")
 
-    if key == 27:  # ESC
+    if key == 27:
         break
 
-    # -----------------------------------------------------
-    # Send control
-    # -----------------------------------------------------
+    # send FSDS controls
     send_to_vehicle(steer_cmd, drive_cmd)
+
+    # send Arduino motor/LED state based on steering
+    update_arduino_from_steering(steer_cmd)
 
     image = cv2.flip(image, 1)
 
@@ -459,12 +523,14 @@ while cap.isOpened():
     cv2.putText(image, "No hands -> zero input", (20, 135),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-    cv2.putText(image, f"SteeringCmd: {steer_cmd:+.2f}", (width - 260, 40),
+    cv2.putText(image, f"SteeringCmd: {steer_cmd:+.2f}", (width - 300, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-    cv2.putText(image, f"DriveCmd: {drive_cmd:+.2f}", (width - 260, 75),
+    cv2.putText(image, f"DriveCmd: {drive_cmd:+.2f}", (width - 300, 75),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 100), 2)
-    cv2.putText(image, f"LeftOpen: {int(left_open)}  RightOpen: {int(right_open)}", (width - 260, 110),
+    cv2.putText(image, f"LeftOpen: {int(left_open)}  RightOpen: {int(right_open)}", (width - 300, 110),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 255, 200), 2)
+    cv2.putText(image, f"Arduino: {last_arduino_cmd if last_arduino_cmd else '-'}", (width - 300, 145),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 255, 255), 2)
 
     cv2.imshow("MediaPipe Tasks Hands", image)
 
@@ -472,7 +538,18 @@ while cap.isOpened():
 # 8. CLEANUP
 # =========================================================
 send_to_vehicle(0.0, -1.0)
+
+# force LED off / neutral on exit
+send_arduino_command("R")
+
 client.enableApiControl(False)
+
+if arduino is not None:
+    try:
+        arduino.close()
+        print("[Arduino] Serial closed.")
+    except Exception:
+        pass
 
 detector.close()
 cap.release()
