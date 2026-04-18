@@ -49,17 +49,12 @@ ARDUINO_PORT = "COM4"
 ARDUINO_BAUD = 9600
 ARDUINO_ENABLED = True
 
-# Hysteresis thresholds so the serial command does not chatter
+# hysteresis thresholds so the serial command does not chatter
 LEFT_STEER_THRESHOLD = -0.25
 RIGHT_STEER_THRESHOLD = 0.25
 
-# Do not keep sending the same steering direction for more than this long
-MAX_SAME_STEER_COMMAND_SECONDS = 0.8
-
 arduino = None
 last_arduino_cmd = None
-last_arduino_cmd_start_time = 0.0
-steer_command_blocked = False
 
 def connect_arduino():
     global arduino
@@ -81,65 +76,29 @@ def connect_arduino():
         print(f"[Arduino] Connection failed: {e}")
 
 def send_arduino_command(cmd: str):
-    global last_arduino_cmd, last_arduino_cmd_start_time, steer_command_blocked
+    global last_arduino_cmd
 
     if arduino is None:
         return
 
-    now = time.time()
+    if cmd == last_arduino_cmd:
+        return
 
-    # Steering commands: L / R
-    if cmd in ("L", "R"):
-        # Same direction as current active one
-        if cmd == last_arduino_cmd:
-            # After 1 second, force a single stop command and then block repeats
-            if (now - last_arduino_cmd_start_time) >= MAX_SAME_STEER_COMMAND_SECONDS:
-                if not steer_command_blocked:
-                    try:
-                        arduino.write(("C\n").encode("utf-8"))
-                        print("[Arduino] Sent: C (timeout stop)")
-                    except Exception as e:
-                        print(f"[Arduino] Write failed: {e}")
-                    steer_command_blocked = True
-                return
-            else:
-                # Still within allowed window: do not resend duplicate L/R repeatedly
-                return
-        else:
-            # Direction changed, allow immediately
-            try:
-                arduino.write((cmd + "\n").encode("utf-8"))
-                last_arduino_cmd = cmd
-                last_arduino_cmd_start_time = now
-                steer_command_blocked = False
-                print(f"[Arduino] Sent: {cmd}")
-            except Exception as e:
-                print(f"[Arduino] Write failed: {e}")
-            return
-
-    # Neutral / center / stop commands
-    else:
-        # Avoid spamming repeated C commands too
-        if cmd == last_arduino_cmd and cmd == "C":
-            return
-
-        try:
-            arduino.write((cmd + "\n").encode("utf-8"))
-            last_arduino_cmd = cmd
-            last_arduino_cmd_start_time = now
-            steer_command_blocked = False
-            print(f"[Arduino] Sent: {cmd}")
-        except Exception as e:
-            print(f"[Arduino] Write failed: {e}")
+    try:
+        arduino.write((cmd + "\n").encode("utf-8"))
+        last_arduino_cmd = cmd
+        print(f"[Arduino] Sent: {cmd}")
+    except Exception as e:
+        print(f"[Arduino] Write failed: {e}")
 
 def update_arduino_from_steering(steer_cmd: float):
     """
     steer_cmd in [-1, 1]
 
     Current mapping:
-      steer left  -> 'L'
-      steer right -> 'R'
-      center      -> 'C'
+      steer left  -> 'L'  -> blink LED
+      steer right -> 'R'  -> LED off
+      center      -> 'C'  -> neutral
 
     If your steering sign is reversed in practice,
     swap the first two branches below.
@@ -544,7 +503,7 @@ while cap.isOpened():
     # send FSDS controls
     send_to_vehicle(steer_cmd, drive_cmd)
 
-    # send Arduino motor state based on steering
+    # send Arduino motor/LED state based on steering
     update_arduino_from_steering(steer_cmd)
 
     image = cv2.flip(image, 1)
@@ -580,8 +539,8 @@ while cap.isOpened():
 # =========================================================
 send_to_vehicle(0.0, -1.0)
 
-# force neutral on exit
-send_arduino_command("C")
+# force LED off / neutral on exit
+send_arduino_command("R")
 
 client.enableApiControl(False)
 
