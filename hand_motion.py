@@ -130,7 +130,7 @@ LOST_THRESHOLD_SECONDS = 5.0
 # behavior:
 # left hand open  -> activate speed hold to target speed
 # right hand open -> hand brake
-TARGET_SPEED_MPS = 9.0
+TARGET_SPEED_MPS = 10.0
 
 # command smoothing
 smoothed_steering_cmd = 0.0
